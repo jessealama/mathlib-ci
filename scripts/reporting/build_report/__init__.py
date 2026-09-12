@@ -1,9 +1,9 @@
-"""Summarise a `lake build` log for Zulip and the GitHub job summary.
+"""Summarise a `lake build --json` log for Zulip and the GitHub job summary.
 
 The entry point is `scripts/reporting/zulip_build_report.py`; this package holds the
 implementation, split by responsibility:
 
-* `lake_log`: the message model, the parser for Lake's text output, attribution of
+* `lake_log`: the message model, the parser for Lake's JSON log stream, attribution of
   messages to linters, and the count aggregations both renderers share;
 * `context`: the report context (repository, commit, run) and how it is read from the
   environment, with the same fallbacks as `zulip_build_report.sh`;

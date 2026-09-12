@@ -58,7 +58,7 @@ def test_mathlib_end_to_end(mathlib_log, tmp_path):
     assert "| | linter.style.docStringVerso | 3 | 0 |" in zulip
     assert "https://github.com/leanprover-community/mathlib4/actions/runs/33358987484" in zulip
     assert len(zulip) < 10000
-    assert "29 lines of output" in proc.stderr
+    assert "8 log entries" in proc.stderr
     assert "6 lines of warnings" in proc.stderr
     assert "2 lines of info" in proc.stderr
     text = summary.read_text(encoding="utf-8")

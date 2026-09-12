@@ -2,82 +2,85 @@
 
 from __future__ import annotations
 
+import pytest
+from conftest import entry, ndjson
+
 from build_report.lake_log import UNATTRIBUTED, Message, classify, parse_build_log
 
 
-def _parse(text):
-    return parse_build_log(text.splitlines())
+def _parse(*entries):
+    return parse_build_log(ndjson(*entries).splitlines())
 
 
-def test_positioned_message_fields():
-    msgs = _parse("warning: Mathlib/A.lean:12:3: something odd\n")
-    assert msgs == [Message("warning", "Mathlib/A.lean", 12, 3, "something odd", None)]
+def test_lean_message_fields():
+    msgs = _parse(entry("warning", "Mathlib/A.lean", 12, 3, "something odd", kind="linter.foo"))
+    assert msgs == [Message("warning", "Mathlib/A.lean", 12, 3, "something odd", "linter.foo")]
 
 
-def test_unpositioned_error():
-    msgs = _parse("error: build failed\n")
-    assert msgs == [Message("error", None, None, None, "build failed", None)]
+def test_body_comes_from_data_not_message():
+    # `message` carries the `file:line:col:` prefix; `data` is the body alone.
+    (m,) = _parse(entry("warning", "Mathlib/A.lean", 12, 3, "x"))
+    assert m.text == "x"
+    assert m.first_line == "x"
 
 
-def test_progress_lines_are_skipped_and_terminate_messages():
-    log = (
-        "⚠ [1/2] Built Mathlib.A (1s)\n"
-        "warning: Mathlib/A.lean:1:0: first\n"
-        "✔ [2/2] Built Mathlib.B (1s)\n"
-        "ℹ [3/3] Built Mathlib.C (1s)\n"
-        "info: Mathlib/C.lean:2:0: second\n"
-        "Build completed successfully (3 jobs).\n"
+def test_lake_entry_without_data_uses_message():
+    (m,) = _parse(entry("error", text="Lean exited with code 1"))
+    assert m == Message("error", None, None, None, "Lean exited with code 1", None)
+
+
+def test_trace_entries_are_dropped():
+    msgs = _parse(
+        entry("trace", text=".> LEAN_PATH=... lean Mathlib/A.lean --json"),
+        entry("warning", "Mathlib/A.lean", 1, 0, "w"),
     )
-    msgs = _parse(log)
-    assert [m.text for m in msgs] == ["first", "second"]
+    assert [m.text for m in msgs] == ["w"]
 
 
-def test_continuation_lines_join_and_trailing_blanks_drop():
-    log = (
-        "warning: Mathlib/A.lean:5:6: `grind?` suggestion failed: `grind only [= a,\n"
-        "  = b]` did not close the goal\n"
-        "\n"
-        "Note: This linter can be disabled with `set_option linter.tacticAnalysis.verifyGrindOnly false`\n"
-        "✔ [1/1] Built Mathlib.A (1s)\n"
-    )
-    (m,) = _parse(log)
-    assert m.text.splitlines()[0].endswith("`grind only [= a,")
-    assert m.text.splitlines()[1] == "  = b]` did not close the goal"
-    assert m.text.endswith("verifyGrindOnly false`")
-    assert m.first_line == "`grind?` suggestion failed: `grind only [= a,"
-
-
-def test_message_with_literal_newline_in_quotes():
-    log = (
-        "warning: Mathlib/A.lean:548:0: unexpected '\n"
-        "'; expected positional argument\n"
-        "\n"
-        "Note: This linter can be disabled with `set_option linter.style.docStringVerso false`\n"
-    )
-    (m,) = _parse(log)
-    assert m.text.startswith("unexpected '\n'; expected positional argument")
-
-
-def test_lines_before_first_message_are_ignored():
-    msgs = _parse("shell: /usr/bin/bash\nenv:\n  X: 1\n\nwarning: A.lean:1:0: hi\n")
+def test_blank_and_crlf_lines():
+    # Feed raw lines (as `main` does after `split("\n")`), so `\r` reaches the parser.
+    msgs = parse_build_log([entry("warning", "A.lean", 1, 0, "hi") + "\r", "", "\r"])
     assert [m.text for m in msgs] == ["hi"]
 
 
+def test_multiline_body_is_preserved():
+    body = "`grind?` suggestion failed: `grind only [= a,\n  = b]` did not close the goal\n\nNote: x"
+    (m,) = _parse(entry("warning", "A.lean", 5, 6, body))
+    assert m.text == body
+    assert m.first_line == "`grind?` suggestion failed: `grind only [= a,"
+
+
+def test_non_json_line_is_an_error():
+    # Text output on stdout means the workflow ran `lake build` without `--json`.
+    with pytest.raises(ValueError, match="line 2"):
+        _parse(entry("warning", "A.lean", 1, 0, "w"), "warning: A.lean:1:0: w")
+
+
 def test_panic_detection():
-    (m,) = _parse("info: Mathlib/A.lean:1:0: PANIC at Lean.Expr.foo Lean/Expr.lean:12:3: boom\n")
+    (m,) = _parse(entry("info", "Mathlib/A.lean", 1, 0, "PANIC at Lean.Expr.foo Lean/Expr.lean:12:3: boom"))
     assert m.is_panic
-    (n,) = _parse("info: Mathlib/A.lean:1:0: 'simp; grind' can be replaced with 'grind'\n")
+    (n,) = _parse(entry("info", "Mathlib/A.lean", 1, 0, "'simp; grind' can be replaced with 'grind'"))
     assert not n.is_panic
 
 
-def test_classify_uses_disable_note():
-    log = (
-        "warning: A.lean:1:0: x\n\nNote: This linter can be disabled with `set_option linter.style.docStringVerso false`\n"
-        "info: A.lean:2:0: y\n"
-        "error: A.lean:3:0: z\n\nNote: This linter can be disabled with `set_option linter.foo false`\n"
-    )
-    msgs = classify(_parse(log))
+def test_classify_uses_kind():
+    msgs = classify(_parse(
+        entry("warning", "A.lean", 1, 0, "x", kind="linter.style.docStringVerso"),
+        entry("info", "A.lean", 2, 0, "y"),
+        entry("error", "A.lean", 3, 0, "z", kind="linter.foo"),
+    ))
     assert [m.linter for m in msgs] == ["linter.style.docStringVerso", UNATTRIBUTED, "linter.foo"]
+
+
+def test_named_error_kind_is_not_a_linter():
+    (m,) = classify(_parse(entry("error", "A.lean", 1, 0, "Unknown identifier `foo`", kind="lean.unknownIdentifier._namedError")))
+    assert m.linter == UNATTRIBUTED
+
+
+def test_disable_note_alone_does_not_attribute():
+    # Attribution comes from `kind`, never from matching the note in the body.
+    (m,) = classify(_parse(entry("warning", "A.lean", 1, 0, "x\n\nNote: This linter can be disabled with `set_option linter.x false`")))
+    assert m.linter == UNATTRIBUTED
 
 
 def test_mathlib_fixture_counts(mathlib_log):
@@ -94,7 +97,6 @@ def test_mathlib_fixture_counts(mathlib_log):
     grind = [m for m in msgs if m.first_line.startswith("`grind?` suggestion failed")]
     assert len(grind) == 6 - 3
     assert all(m.linter == UNATTRIBUTED for m in grind)
-    # Continuation lines of a wrapped `grind only [...]` list stay with their message.
     assert any(m.text.endswith("\n  = mem_filter]` did not close the goal") for m in grind)
     assert all(m.linter == UNATTRIBUTED for m in msgs if m.severity == "info")
 
@@ -107,19 +109,13 @@ def test_cslib_fixture_counts(cslib_log):
     assert msgs[0].line == 51
 
 
-def test_failed_build_epilogue_terminates_messages(failed_log):
+def test_failed_build_fixture(failed_log):
     with open(failed_log, encoding="utf-8") as f:
         msgs = classify(parse_build_log(f))
-    texts = [m.text for m in msgs]
-    assert not any("Some required" in t or "- Mathlib.Algebra" in t for t in texts)
-    assert texts[-1] == "build failed"
-    assert [m.severity for m in msgs].count("error") == 4
-
-
-def test_progress_lines_matched_structurally():
-    # Any progress glyph with a [n/m] counter ends a message, whatever follows it.
-    log = "error: A.lean:1:0: boom\n✖ [2/9] Building B\n⚠ [3/9] Replayed C\nwarning: C.lean:1:0: w\n"
-    assert [m.text for m in _parse(log)] == ["boom", "w"]
+    # The failed job's trace-level replay of the `lean` command line is not a message.
+    assert not any(".> LEAN_PATH" in m.text for m in msgs)
+    assert [m.severity for m in msgs].count("error") == 3
+    assert [m.text for m in msgs if m.file is None and m.severity == "error"] == ["Lean exited with code 1"]
 
 
 def test_panic_lines_extracted_from_stderr_block(failed_log):
@@ -133,21 +129,13 @@ def test_panic_lines_extracted_from_stderr_block(failed_log):
     ]
 
 
-def test_classify_accepts_set_option_zero_note(failed_log):
+def test_classify_fixture_linters(failed_log):
     with open(failed_log, encoding="utf-8") as f:
         msgs = classify(parse_build_log(f))
     assert [m.linter for m in msgs if m.severity == "warning"] == [
         "linter.tacticAnalysis.verifyGrindOnly",
         "linter.haveLet",
     ]
-
-
-def test_crlf_lines_are_stripped():
-    # Feed raw lines (as `main` does after `split("\n")`), so the `\r` reaches the parser.
-    (m,) = parse_build_log([
-        "warning: A.lean:1:0: hi\r",
-        "\r",
-        "Note: This linter can be disabled with `set_option linter.x false`\r",
-    ])
-    assert "\r" not in m.text
-    assert classify([m])[0].linter == "linter.x"
+    # Mathlib's `logLint0Disable` variant used to need a `(?:false|0)` alternation
+    # in a regex; with `kind` on the entry the note's wording no longer matters.
+    assert [m.linter for m in msgs if m.severity == "error"] == [UNATTRIBUTED] * 3

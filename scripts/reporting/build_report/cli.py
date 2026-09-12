@@ -1,4 +1,4 @@
-"""Command-line entry: read the log, write the Zulip block and the job summary.
+"""Command-line entry: read the `lake build --json` log, write the Zulip block and the job summary.
 
 Usage: zulip_build_report.py LOGFILE > "$GITHUB_OUTPUT"
 
@@ -37,8 +37,7 @@ def main(argv: List[str]) -> int:
     messages = classify(parse_build_log(lines))
 
     # Progress on stderr, in the shell script's wording.
-    filtered = [line for line in lines if not line.startswith(("✔", "trace: "))]
-    print(f"{len(filtered)} lines of output", file=sys.stderr)
+    print(f"{len(messages)} log entries", file=sys.stderr)
     counts = severity_counts(messages)
     for label, noun in (("Panics", "panic"), ("Errors", "errors"), ("Warnings", "warnings"), ("Info messages", "info")):
         if label in counts:

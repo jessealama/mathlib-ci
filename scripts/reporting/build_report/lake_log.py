@@ -1,35 +1,27 @@
-"""Parse a `lake build` log into messages and attribute them to linters.
+"""Parse a `lake build --json` log into messages and attribute them to linters.
 
-Lake prints each Lean message as `severity: file:line:col: text`, possibly followed by
-continuation lines, interleaved with build-progress lines (`✔ [12/345] Built ...`).
-`parse_build_log` turns that into `Message` records; `classify` fills in `Message.linter`
-from the note that `Lean.Linter.logLint` appends to every linter message,
-"This linter can be disabled with `set_option linter.X false`". Messages without that
-note are attributed to `UNATTRIBUTED`.
+With `--json`, Lake writes one JSON object per log entry to stdout (progress goes to
+stderr). Every object has `target`, `level`, and `message`; entries that came from a
+Lean message also carry `kind`, `fileName`, `pos`, `endPos`, and `data` (the body
+without the `file:line:col:` prefix). `parse_build_log` turns that stream into
+`Message` records; `classify` fills in `Message.linter` from `kind`, which for a linter
+message is the linter's option name. Messages without a `linter.*` kind are attributed
+to `UNATTRIBUTED`.
 
 This is the only module that knows Lake's output format.
 """
 
 from __future__ import annotations
 
-import re
+import json
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Tuple
 
 UNATTRIBUTED = "(not attributed to a linter)"
 
-MESSAGE_RE = re.compile(r"^(error|warning|info): (.*)$")
-POSITION_RE = re.compile(r"^(\S+?):(\d+):(\d+): (.*)$")
-# `Lean.Linter.logLint` ends with "... `set_option linter.X false`"; Mathlib's
-# `logLint0Disable` variant (e.g. `linter.haveLet`, `linter.style.longFile`) ends in `0`.
-NOTE_RE = re.compile(r"This linter can be disabled with `set_option (\S+) (?:false|0)`")
-# Lines Lake prints between messages. Progress lines look like `✔ [12/345] Built X (1.2s)`
-# (also ⚠, ✖, ℹ); the epilogue is `Build completed successfully (N jobs).` or
-# `Some required targets logged failures:` followed by `- Module` lines.
-PROGRESS_RE = re.compile(r"^[✔⚠✖ℹ] \[\d+/\d+\]")
-EPILOGUE_RE = re.compile(r"^(Build completed|Some required \w+ logged failures)")
 PANIC_PREFIX = "PANIC at "
+LINTER_KIND_PREFIX = "linter."
 
 
 @dataclass
@@ -49,8 +41,10 @@ class Message:
     def panic_lines(self) -> List[str]:
         """The `PANIC at ...` lines in this message.
 
-        Lean panics go to stderr, which Lake relays as one unpositioned `info: stderr:`
-        message with the panic lines after it, so one message can carry several panics.
+        A panic during `#eval`-style command evaluation is a positioned info message
+        whose body starts with the panic line. A panic that reaches Lean's stderr is
+        relayed by Lake as one unpositioned `stderr:` info entry with the panic lines
+        after it, so one message can carry several panics.
         """
         if self.severity != "info":
             return []
@@ -62,47 +56,48 @@ class Message:
 
 
 def parse_build_log(lines: Iterable[str]) -> List[Message]:
-    """Split a `lake build` log into messages, keeping continuation lines.
+    """Read the newline-delimited JSON of `lake build --json` into messages.
 
-    A message starts on an `error:`/`warning:`/`info:` line and runs until the next
-    message or the next build-progress line. Lines before the first message are ignored.
+    Blank lines are skipped and `trace` entries (Lake's own command lines, replayed
+    for failed jobs) are dropped; anything else that is not a JSON object is an error,
+    since it means the log was not produced with `--json`.
     """
     messages: List[Message] = []
-    current: Optional[List[str]] = None  # lines of the message being built
-
-    def flush() -> None:
-        if current is not None:
-            while len(current) > 1 and current[-1] == "":
-                current.pop()
-            messages[-1].text = "\n".join(current)
-
-    for raw in lines:
-        line = raw.rstrip("\r\n")
-        m = MESSAGE_RE.match(line)
-        if m:
-            flush()
-            severity, rest = m.group(1), m.group(2)
-            p = POSITION_RE.match(rest)
-            if p:
-                msg = Message(severity, p.group(1), int(p.group(2)), int(p.group(3)), p.group(4))
-            else:
-                msg = Message(severity, None, None, None, rest)
-            messages.append(msg)
-            current = [msg.text]
-        elif PROGRESS_RE.match(line) or EPILOGUE_RE.match(line) or line.startswith("trace: "):
-            flush()
-            current = None
-        elif current is not None:
-            current.append(line)
-    flush()
+    for lineno, raw in enumerate(lines, 1):
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except ValueError as e:
+            raise ValueError(f"line {lineno} is not a JSON log entry (was `lake build --json` used?): {line[:80]}") from e
+        if not isinstance(obj, dict) or "level" not in obj or "message" not in obj:
+            raise ValueError(f"line {lineno} is not a JSON log entry (was `lake build --json` used?): {line[:80]}")
+        if obj["level"] == "trace":
+            continue
+        pos = obj.get("pos") or {}
+        messages.append(Message(
+            severity=obj["level"],
+            file=obj.get("fileName"),
+            line=pos.get("line"),
+            col=pos.get("column"),
+            # Entries Lake creates itself (stderr relays, `Lean exited with code N`)
+            # have no `data`; their `message` has no position prefix to strip.
+            text=obj.get("data", obj["message"]),
+            linter=obj.get("kind"),
+        ))
     return messages
 
 
 def classify(messages: List[Message]) -> List[Message]:
-    """Attribute each message to a linter via the `set_option ... false` note."""
+    """Attribute each message to a linter via its `kind`.
+
+    `kind` is also set for named errors (`lean.unknownIdentifier._namedError`), so only
+    a `linter.` kind counts; everything else is `UNATTRIBUTED`.
+    """
     for msg in messages:
-        found = NOTE_RE.search(msg.text)
-        msg.linter = found.group(1) if found else UNATTRIBUTED
+        if not msg.linter or not msg.linter.startswith(LINTER_KIND_PREFIX):
+            msg.linter = UNATTRIBUTED
     return messages
 
 

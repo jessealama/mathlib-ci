@@ -38,8 +38,13 @@ def _by_position(msgs: List[Message]) -> List[Message]:
     return sorted(msgs, key=lambda m: (m.file is None, m.file or "", m.line or 0, m.col or 0))
 
 
+def _cell(text: str) -> str:
+    """A multi-line message in one table cell; GitHub renders `<br>` inside tables."""
+    return escape_cell(text).replace("\n", "<br>")
+
+
 def _sorted_rows(msgs: List[Message], ctx: ReportContext) -> List[str]:
-    return [f"| {source_link(m, ctx)} | {escape_cell(m.first_line)} |" for m in _by_position(msgs)]
+    return [f"| {source_link(m, ctx)} | {_cell(m.body)} |" for m in _by_position(msgs)]
 
 
 def _panic_rows(msgs: List[Message], ctx: ReportContext) -> List[str]:

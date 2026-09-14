@@ -9,6 +9,7 @@ first.
 from __future__ import annotations
 
 import os
+from textwrap import dedent
 from typing import Dict, List, Tuple
 
 from .context import ReportContext
@@ -97,7 +98,12 @@ def render_summary(messages: List[Message], ctx: ReportContext, limit: int = SUM
     def render() -> str:
         out = list(head)
         for (heading, rows), n in zip(sections, shown):
-            out.append(f"\n{heading}\n\n| Location | Message |\n| --- | --- |\n")
+            out.append(dedent(f"""
+                {heading}
+
+                | Location | Message |
+                | --- | --- |
+                """))
             out += [r + "\n" for r in rows[:n]]
             if n < len(rows):
                 out.append(f"| … | {len(rows) - n} more rows not shown |\n")

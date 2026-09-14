@@ -46,6 +46,21 @@ class Message:
         return self.text.split("\n", 1)[0]
 
     @property
+    def body(self) -> str:
+        """The whole message without the trailing `set_option linter.X false` note.
+
+        Once a message is filed under its linter the note carries no information, so a
+        per-occurrence listing drops it (and the blank line Lean puts before it).
+        """
+        found = NOTE_RE.search(self.text)
+        if not found:
+            return self.text
+        line_start = self.text.rfind("\n", 0, found.start()) + 1
+        if line_start == 0:  # the note is the whole message; keep it rather than nothing
+            return self.text
+        return self.text[:line_start].rstrip("\n")
+
+    @property
     def panic_lines(self) -> List[str]:
         """The `PANIC at ...` lines in this message.
 

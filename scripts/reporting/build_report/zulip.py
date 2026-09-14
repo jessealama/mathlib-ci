@@ -10,6 +10,7 @@ build still posts a readable message. The full detail lives in the job summary (
 
 from __future__ import annotations
 
+from textwrap import dedent
 from typing import Dict, List, Tuple
 
 from .context import ReportContext
@@ -33,12 +34,16 @@ def _description_counts(descriptions: List[str]) -> List[Tuple[int, str]]:
 
 
 def _spoiler_table(title: str, column: str, rows: List[Tuple[int, str]], shown: int) -> str:
-    out = [f"```spoiler {title}", f"| | {column} |", "| ---: | --- |"]
-    out += [f"| {n} | {escape_cell(d)} |" for n, d in rows[:shown]]
+    out = [dedent(f"""\
+        ```spoiler {title}
+        | | {column} |
+        | ---: | --- |
+        """)]
+    out += [f"| {n} | {escape_cell(d)} |\n" for n, d in rows[:shown]]
     if shown < len(rows):
-        out.append(f"| … | {len(rows) - shown} more not shown; see the job summary |")
-    out += ["```", ""]
-    return "\n".join(out) + "\n"
+        out.append(f"| … | {len(rows) - shown} more not shown; see the job summary |\n")
+    out.append("```\n\n")
+    return "".join(out)
 
 
 def render_zulip(messages: List[Message], ctx: ReportContext, limit: int = ZULIP_LIMIT) -> str:

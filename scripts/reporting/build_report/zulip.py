@@ -11,7 +11,7 @@ build still posts a readable message. The full detail lives in the job summary (
 from __future__ import annotations
 
 from textwrap import dedent
-from typing import Dict, List, Tuple
+from typing import Callable, Dict, List, Tuple
 
 from .context import ReportContext
 from .lake_log import Message, linter_table, severity_counts
@@ -46,11 +46,25 @@ def _spoiler_table(title: str, column: str, rows: List[Tuple[int, str]], shown: 
     return "".join(out)
 
 
+def _linter_table(rows: List[Tuple[str, int, int]], show_info: bool, shown: int, run_url: str) -> str:
+    if show_info:
+        out = ["| | Linter | Warnings | Info |\n| ---: | --- | ---: | ---: |\n"]
+        out += [f"| | {name} | {w} | {i} |\n" for name, w, i in rows[:shown]]
+    else:
+        out = ["| | Linter | Warnings |\n| ---: | --- | ---: |\n"]
+        out += [f"| | {name} | {w} |\n" for name, w, _ in rows[:shown]]
+    if shown < len(rows):
+        out.append(f"| | … {len(rows) - shown} more not shown | |{' |' if show_info else ''}\n")
+    out.append(f"\nFull per-linter tables, with source links, are in the [job summary]({run_url}).\n\n")
+    return "".join(out)
+
+
 def render_zulip(messages: List[Message], ctx: ReportContext, limit: int = ZULIP_LIMIT) -> str:
     """The Zulip message: headline, severity counts, per-linter table, error/panic tables.
 
-    If the message would exceed `limit` characters, the largest spoiler table is halved
-    until it fits, with a trailing row saying how many rows were left out.
+    If the message would exceed `limit` characters, the table taking the most room (the
+    per-linter table or a spoiler table) is halved until it fits, down to a single
+    pointer row saying how many rows were left out.
     """
     icon, ended = ("✅", "succeeded") if ctx.success else ("❌", "failed")
     head = (
@@ -64,34 +78,33 @@ def render_zulip(messages: List[Message], ctx: ReportContext, limit: int = ZULIP
     out = [f"{head} [{ended} with messages]({ctx.run_url}):\n",
            "".join(f"\n* {label}: {n}" for label, n in counts.items()) + "\n\n"]
 
-    rows = linter_table(messages, ctx.show_info)
-    if any(w + i for _, w, i in rows):
-        if ctx.show_info:
-            out.append("| | Linter | Warnings | Info |\n| ---: | --- | ---: | ---: |\n")
-            out += [f"| | {name} | {w} | {i} |\n" for name, w, i in rows]
-        else:
-            out.append("| | Linter | Warnings |\n| ---: | --- | ---: |\n")
-            out += [f"| | {name} | {w} |\n" for name, w, _ in rows]
-        out.append(f"\nFull per-linter tables, with source links, are in the [job summary]({ctx.run_url}).\n\n")
+    # Each table is rendered with its first `shown[k]` rows; the rest is a pointer row.
+    tables: List[Callable[[int], str]] = []
+    shown: List[int] = []
 
-    tables: List[Tuple[str, str, List[Tuple[int, str]]]] = []  # (title, column, rows)
+    linters = linter_table(messages, ctx.show_info)
+    if any(w + i for _, w, i in linters):
+        tables.append(lambda n: _linter_table(linters, ctx.show_info, n, ctx.run_url))
+        shown.append(len(linters))
+
     panic_lines = [line for m in messages for line in m.panic_lines]
     if panic_lines:
-        tables.append(("Panic counts", "Panic description", _description_counts(panic_lines)))
-    errors = [m.first_line for m in messages if m.severity == "error"]
-    if errors:
-        tables.append(("Error counts", "Error description", _description_counts(errors)))
-
-    shown = [len(rows) for _, _, rows in tables]
+        panics = _description_counts(panic_lines)
+        tables.append(lambda n: _spoiler_table("Panic counts", "Panic description", panics, n))
+        shown.append(len(panics))
+    error_lines = [m.first_line for m in messages if m.severity == "error"]
+    if error_lines:
+        errors = _description_counts(error_lines)
+        tables.append(lambda n: _spoiler_table("Error counts", "Error description", errors, n))
+        shown.append(len(errors))
 
     def render() -> str:
-        return "".join(out) + "".join(
-            _spoiler_table(title, column, rows, n) for (title, column, rows), n in zip(tables, shown)
-        )
+        return "".join(out) + "".join(table(n) for table, n in zip(tables, shown))
 
     text = render()
-    while len(text) > limit and any(n > 1 for n in shown):
-        biggest = max(range(len(shown)), key=lambda k: shown[k])
+    while len(text) > limit and any(shown):
+        # Halve the table that takes the most room (one long error can outweigh many rows).
+        biggest = max((k for k in range(len(shown)) if shown[k]), key=lambda k: len(tables[k](shown[k])))
         shown[biggest] //= 2
         text = render()
     return text

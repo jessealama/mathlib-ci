@@ -52,6 +52,11 @@ def main(argv: List[str]) -> int:
         # GitHub's 1 MiB cap is on the whole file for the step, and exceeding it drops
         # the summary entirely, so budget for whatever earlier commands already wrote.
         existing = os.path.getsize(summary_path) if os.path.exists(summary_path) else 0
-        with open(summary_path, "a", encoding="utf-8") as f:
-            f.write(render_summary(messages, ctx, limit=max(0, SUMMARY_LIMIT - existing)))
+        summary = render_summary(messages, ctx, limit=max(0, SUMMARY_LIMIT - existing))
+        if summary:
+            with open(summary_path, "a", encoding="utf-8") as f:
+                f.write(summary)
+        else:
+            print(f"job summary not written: {existing} bytes already in {summary_path}, "
+                  f"limit is {SUMMARY_LIMIT}", file=sys.stderr)
     return 0

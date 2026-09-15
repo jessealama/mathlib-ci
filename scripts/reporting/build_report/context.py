@@ -22,6 +22,9 @@ class ReportContext:
     # Directory the paths in the log are relative to (the package directory `lake build`
     # ran in). Used to decide whether a path can be linked into `target_repo`.
     source_root: str = "."
+    # Where the job summary is appended (`GITHUB_STEP_SUMMARY`). Empty means no summary
+    # is written, and the Zulip message must not point to one.
+    summary_path: str = ""
 
     @property
     def run_url(self) -> str:
@@ -51,6 +54,7 @@ def context_from_env(env: Mapping[str, str]) -> ReportContext:
       WORKFLOW | GITHUB_WORKFLOW                  workflow name, for the headline
       SUCCESS                                     "true" if the build step succeeded
       INFO                                        anything but "false" reports info messages
+      GITHUB_STEP_SUMMARY                         file the job summary is appended to, if set
     """
     return ReportContext(
         target_repo=_first(env, "TARGET_REPO", "REPO", "GITHUB_REPOSITORY"),
@@ -61,4 +65,5 @@ def context_from_env(env: Mapping[str, str]) -> ReportContext:
         success=env.get("SUCCESS", "") == "true",
         # `${INFO:-false}` in the shell script: unset or empty both mean false.
         show_info=(env.get("INFO") or "false") != "false",
+        summary_path=env.get("GITHUB_STEP_SUMMARY", ""),
     )

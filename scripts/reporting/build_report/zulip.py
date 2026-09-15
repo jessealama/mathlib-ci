@@ -33,7 +33,7 @@ def _description_counts(descriptions: List[str]) -> List[Tuple[int, str]]:
     return sorted(((n, d) for d, n in rows), key=lambda r: -r[0])
 
 
-def _spoiler_table(title: str, column: str, rows: List[Tuple[int, str]], shown: int) -> str:
+def _spoiler_table(title: str, column: str, rows: List[Tuple[int, str]], shown: int, ctx: ReportContext) -> str:
     out = [dedent(f"""\
         ```spoiler {title}
         | | {column} |
@@ -41,21 +41,24 @@ def _spoiler_table(title: str, column: str, rows: List[Tuple[int, str]], shown: 
         """)]
     out += [f"| {n} | {escape_cell(d)} |\n" for n, d in rows[:shown]]
     if shown < len(rows):
-        out.append(f"| … | {len(rows) - shown} more not shown; see the job summary |\n")
+        where = "; see the job summary" if ctx.summary_path else ""
+        out.append(f"| … | {len(rows) - shown} more not shown{where} |\n")
     out.append("```\n\n")
     return "".join(out)
 
 
-def _linter_table(rows: List[Tuple[str, int, int]], show_info: bool, shown: int, run_url: str) -> str:
-    if show_info:
+def _linter_table(rows: List[Tuple[str, int, int]], shown: int, ctx: ReportContext) -> str:
+    if ctx.show_info:
         out = ["| | Linter | Warnings | Info |\n| ---: | --- | ---: | ---: |\n"]
         out += [f"| | {name} | {w} | {i} |\n" for name, w, i in rows[:shown]]
     else:
         out = ["| | Linter | Warnings |\n| ---: | --- | ---: |\n"]
         out += [f"| | {name} | {w} |\n" for name, w, _ in rows[:shown]]
     if shown < len(rows):
-        out.append(f"| | … {len(rows) - shown} more not shown | |{' |' if show_info else ''}\n")
-    out.append(f"\nFull per-linter tables, with source links, are in the [job summary]({run_url}).\n\n")
+        out.append(f"| | … {len(rows) - shown} more not shown | |{' |' if ctx.show_info else ''}\n")
+    if ctx.summary_path:
+        out.append(f"\nFull per-linter tables, with source links, are in the [job summary]({ctx.run_url}).\n")
+    out.append("\n")
     return "".join(out)
 
 
@@ -84,18 +87,18 @@ def render_zulip(messages: List[Message], ctx: ReportContext, limit: int = ZULIP
 
     linters = linter_table(messages, ctx.show_info)
     if any(w + i for _, w, i in linters):
-        tables.append(lambda n: _linter_table(linters, ctx.show_info, n, ctx.run_url))
+        tables.append(lambda n: _linter_table(linters, n, ctx))
         shown.append(len(linters))
 
     panic_lines = [line for m in messages for line in m.panic_lines]
     if panic_lines:
         panics = _description_counts(panic_lines)
-        tables.append(lambda n: _spoiler_table("Panic counts", "Panic description", panics, n))
+        tables.append(lambda n: _spoiler_table("Panic counts", "Panic description", panics, n, ctx))
         shown.append(len(panics))
     error_lines = [m.first_line for m in messages if m.severity == "error"]
     if error_lines:
         errors = _description_counts(error_lines)
-        tables.append(lambda n: _spoiler_table("Error counts", "Error description", errors, n))
+        tables.append(lambda n: _spoiler_table("Error counts", "Error description", errors, n, ctx))
         shown.append(len(errors))
 
     def render() -> str:

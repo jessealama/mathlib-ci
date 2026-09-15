@@ -4,7 +4,8 @@ Usage: zulip_build_report.py LOGFILE > "$GITHUB_OUTPUT"
 
 stdout carries a `zulip-message<<DELIM ... DELIM` block for `GITHUB_OUTPUT`; stderr
 carries the line counts the shell script printed; the job summary is appended to
-`GITHUB_STEP_SUMMARY` when that variable is set.
+`GITHUB_STEP_SUMMARY` when that variable is set (and the Zulip message only points to
+the summary when it is).
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from __future__ import annotations
 import os
 import sys
 import uuid
+from contextlib import nullcontext
 from typing import List
 
 from .context import context_from_env
@@ -44,19 +46,21 @@ def main(argv: List[str]) -> int:
         if label in counts:
             print(f"{counts[label]} lines of {noun}", file=sys.stderr)
 
-    delimiter = str(uuid.uuid4())
-    sys.stdout.write(f"zulip-message<<{delimiter}\n{render_zulip(messages, ctx)}{delimiter}\n")
-
-    summary_path = os.environ.get("GITHUB_STEP_SUMMARY", "")
-    if summary_path:
+    summary = ""
+    if ctx.summary_path:
         # GitHub's 1 MiB cap is on the whole file for the step, and exceeding it drops
         # the summary entirely, so budget for whatever earlier commands already wrote.
-        existing = os.path.getsize(summary_path) if os.path.exists(summary_path) else 0
+        existing = os.path.getsize(ctx.summary_path) if os.path.exists(ctx.summary_path) else 0
         summary = render_summary(messages, ctx, limit=max(0, SUMMARY_LIMIT - existing))
-        if summary:
-            with open(summary_path, "a", encoding="utf-8") as f:
-                f.write(summary)
-        else:
-            print(f"job summary not written: {existing} bytes already in {summary_path}, "
+        if not summary:
+            print(f"job summary not written: {existing} bytes already in {ctx.summary_path}, "
                   f"limit is {SUMMARY_LIMIT}", file=sys.stderr)
+
+    # The summary file is opened before anything goes to stdout: the Zulip message
+    # points to the summary, so an unwritable path must fail the step, not post a link.
+    with (open(ctx.summary_path, "a", encoding="utf-8") if ctx.summary_path else nullcontext()) as f:
+        delimiter = str(uuid.uuid4())
+        sys.stdout.write(f"zulip-message<<{delimiter}\n{render_zulip(messages, ctx)}{delimiter}\n")
+        if summary:
+            f.write(summary)
     return 0

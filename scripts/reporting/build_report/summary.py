@@ -71,6 +71,7 @@ def render_summary(messages: List[Message], ctx: ReportContext, limit: int = SUM
     """The job summary: one section per linter (plus errors and panics), a row per message.
 
     If the result would exceed `limit` bytes, the largest sections are truncated first.
+    Returns "" if even the headings and pointer rows would not fit.
     """
     if not ctx.show_info:
         messages = [m for m in messages if m.severity != "info" or m.is_panic]
@@ -119,4 +120,6 @@ def render_summary(messages: List[Message], ctx: ReportContext, limit: int = SUM
         biggest = max(range(len(shown)), key=lambda k: shown[k])
         shown[biggest] //= 2
         text = render()
+    if len(text.encode("utf-8")) > limit:
+        return ""  # not even the headings fit; the caller reports that
     return text
